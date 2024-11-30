@@ -1,2 +1,2 @@
 # rivalstoken
- The RVLS Project is a revolutionary P2E ecosystem featuring three tokens across multiple blockchains. It supports animal shelters and includes a variety of NFT collections, a streaming series, and digital trading card games.
+The RVLS Project is a revolutionary P2E ecosystem featuring three tokens across multiple blockchains. It supports animal shelters and includes a variety of NFT collections, a streaming series, and digital trading card games. With mobile apps and digital trading card games already available, Rivals continues to expand, developing more blockchain and NFT games, as well as NFT staking. This provides an immersive and dynamic experience for gamers and NFT enthusiasts while contributing to a meaningful cause.     
