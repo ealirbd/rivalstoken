@@ -1,1 +1,162 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
 
+/**
+Website: https://www.rvls.io
+X/Twitter: https://x.com/RVLSToken
+Telegram: https://t.me/rvlstokenchatchannel
+**/
+
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
+import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Factory.sol";
+
+contract RivalsToken is ERC20, Ownable, ReentrancyGuard {
+    uint256 public constant MAX_SUPPLY = 500_000_000 * 10**18; // 500 million tokens
+    uint256 public constant BUY_TAX = 3; // Buy tax is set to 3%
+    uint256 public constant SELL_TAX = 3; // Sell tax is set to 3%
+    
+    address public donationWallet;
+    address public liquidityPool;
+    
+    // Addresses for different allocations
+    address public teamWallet;
+    address public marketingWallet;
+    address public p2eWallet;
+    address public liquidityRewardsWallet;
+
+    // Locking mechanism for team tokens
+    uint256 public teamTokenUnlockTime;
+
+    mapping(address => bool) public isExcludedFromTax;
+    mapping(address => bool) public isWhitelisted;
+    mapping(address => bool) public isBlacklisted;
+
+    IUniswapV2Router02 public uniswapRouter;
+    address public uniswapPair;
+
+    event TaxExcluded(address indexed account);
+    event TaxIncluded(address indexed account);
+    event AddressWhitelisted(address indexed account);
+    event AddressRemovedFromWhitelist(address indexed account);
+    event AddressBlacklisted(address indexed account);
+    event AddressRemovedFromBlacklist(address indexed account);
+
+    constructor(
+        address _donationWallet,
+        address _liquidityPool,
+        address _teamWallet,
+        address _marketingWallet,
+        address _p2eWallet,
+        address _liquidityRewardsWallet,
+        address _uniswapRouterAddress
+    ) ERC20("Rivals Token", "RVLS") {
+        require(_donationWallet != address(0), "Invalid donation wallet");
+        require(_liquidityPool != address(0), "Invalid liquidity pool");
+        require(_teamWallet != address(0), "Invalid team wallet");
+        require(_marketingWallet != address(0), "Invalid marketing wallet");
+        require(_p2eWallet != address(0), "Invalid P2E wallet");
+        require(_liquidityRewardsWallet != address(0), "Invalid liquidity rewards wallet");
+        require(_uniswapRouterAddress != address(0), "Invalid Uniswap router address");
+
+        donationWallet = _donationWallet;
+        liquidityPool = _liquidityPool;
+        teamWallet = _teamWallet;
+        marketingWallet = _marketingWallet;
+        p2eWallet = _p2eWallet;
+        liquidityRewardsWallet = _liquidityRewardsWallet;
+
+        // Mint the total supply to the donation wallet
+        _mint(donationWallet, MAX_SUPPLY); // Minting the entire supply to the donation wallet
+
+        // Set the unlock time for team tokens (2 years from deployment)
+        teamTokenUnlockTime = block.timestamp + 2 * 365 days; // 2 years
+
+        // Initialize Uniswap Router
+        uniswapRouter = IUniswapV2Router02(_uniswapRouterAddress);
+        // Create a Uniswap pair for this token
+        uniswapPair = IUniswapV2Factory(uniswapRouter.factory()).createPair(address(this), uniswapRouter.WETH());
+    }
+
+    // Tax exclusion functions
+    function excludeFromTax(address account ) external onlyOwner {
+        isExcludedFromTax[account] = true;
+        emit TaxExcluded(account);
+    }
+
+    function includeInTax(address account) external onlyOwner {
+        isExcludedFromTax[account] = false;
+        emit TaxIncluded(account);
+    }
+
+    // Whitelist functions
+    function whitelistAddress(address account) external onlyOwner {
+        isWhitelisted[account] = true;
+        emit AddressWhitelisted(account);
+    }
+
+    function removeFromWhitelist(address account) external onlyOwner {
+        isWhitelisted[account] = false;
+        emit AddressRemovedFromWhitelist(account);
+    }
+
+    // Blacklist functions
+    function blacklistAddress(address account) external onlyOwner {
+        isBlacklisted[account] = true;
+        emit AddressBlacklisted(account);
+    }
+
+    function removeFromBlacklist(address account) external onlyOwner {
+        isBlacklisted[account] = false;
+        emit AddressRemovedFromBlacklist(account);
+    }
+
+    // Override transfer function to include tax logic
+    function _transfer(address sender, address recipient, uint256 amount) internal override {
+        require(!isBlacklisted[sender] && !isBlacklisted[recipient], "Blacklisted address");
+
+        uint256 taxAmount = 0;
+
+        if (!isExcludedFromTax[sender] && !isExcludedFromTax[recipient]) {
+            if (isWhitelisted[recipient]) {
+                taxAmount = (amount * BUY_TAX) / 100;
+            } else {
+                taxAmount = (amount * SELL_TAX) / 100;
+            }
+        }
+
+        uint256 amountAfterTax = amount - taxAmount;
+
+        super._transfer(sender, recipient, amountAfterTax);
+
+        if (taxAmount > 0) {
+            super._transfer(sender, address(this), taxAmount);
+        }
+    }
+
+    // Function to swap tokens for ETH
+    function swapTokensForETH(uint256 tokenAmount) external nonReentrant {
+        require(tokenAmount > 0, "Amount must be greater than zero");
+        require(balanceOf(msg.sender) >= tokenAmount, "Insufficient token balance");
+
+        // Approve the Uniswap router to spend the tokens
+        _approve(address(this), tokenAmount);
+
+        // Prepare the swap path
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = uniswapRouter.WETH();
+
+        // Execute the swap
+        uniswapRouter.swapExactTokensForETH(
+            tokenAmount,
+            0, // Accept any amount of ETH
+            path,
+            msg.sender,
+            block.timestamp
+        );
+    }
+}
