@@ -4,15 +4,109 @@ pragma solidity ^0.8.20;
 /**
 Website: https://www.rvls.io
 X/Twitter: https://x.com/RVLSToken
-Telegram: https://t.me/rvlstokenchatchannel
+Telegram: https://t.me/rvlstokenchannel
 **/
 
+contract ERC20 {
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
-import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Factory.sol";
+    constructor(string memory _name, string memory _symbol) {
+        name = _name;
+        symbol = _Symbol;
+        decimals = 18;
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += value;
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        allowance[msg.sender][spender] = value;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Allowance exceeded");
+        balanceOf[from] -= value;
+        balanceOf[to] += value;
+        allowance[from][msg.sender] -= value;
+        return true;
+    }
+
+    function _mint(address account, uint256 amount) internal {
+        require(account != address(0), "Mint to the zero address");
+        totalSupply += amount;
+        balanceOf[account] += amount;
+    }
+
+    function _burn(address account, uint256 amount) internal {
+        require(account != address(0), "Burn from the zero address");
+        require(balanceOf[account] >= amount, "Burn amount exceeds balance");
+        totalSupply -= amount;
+        balanceOf[account] -= amount;
+    }
+}
+
+contract Ownable {
+    address public owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Caller is not the owner");
+        _;
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "New owner is the zero address");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+}
+
+contract ReentrancyGuard {
+    uint256 private _guardCounter;
+
+    constructor() {
+        _guardCounter = 1;
+    }
+
+    modifier nonReentrant() {
+        require(_guardCounter == 1, "ReentrancyGuard: reentrant call");
+        _guardCounter = 2;
+        _;
+        _guardCounter = 1;
+    }
+}
+
+interface IUniswapV2Router02 {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+    function swapExactTokensForETH(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+}
+
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
 
 contract RivalsToken is ERC20, Ownable, ReentrancyGuard {
     uint256 public constant MAX_SUPPLY = 500_000_000 * 10**18; // 500 million tokens
@@ -29,7 +123,8 @@ contract RivalsToken is ERC20, Ownable, ReentrancyGuard {
     address public liquidityRewardsWallet;
 
     // Locking mechanism for team tokens
-    uint256 public teamTokenUnlockTime;
+    uint256 public teamTokenUnlockDuration; // Duration in seconds
+    uint256 public teamTokenUnlockTime; // Timestamp when tokens unlock
 
     mapping(address => bool) public isExcludedFromTax;
     mapping(address => bool) public isWhitelisted;
@@ -38,12 +133,15 @@ contract RivalsToken is ERC20, Ownable, ReentrancyGuard {
     IUniswapV2Router02 public uniswapRouter;
     address public uniswapPair;
 
-    event TaxExcluded(address indexed account);
+    event TaxExcluded(address indexed account );
     event TaxIncluded(address indexed account);
     event AddressWhitelisted(address indexed account);
     event AddressRemovedFromWhitelist(address indexed account);
     event AddressBlacklisted(address indexed account);
     event AddressRemovedFromBlacklist(address indexed account);
+    event TeamTokenUnlockDurationSet(uint256 duration);
+    event TokensSwapped(address indexed user, uint256 tokenAmount, uint256 ethAmount);
+    event TransferWithTax(address indexed from, address indexed to, uint256 value, uint256 taxAmount);
 
     constructor(
         address _donationWallet,
@@ -52,37 +150,47 @@ contract RivalsToken is ERC20, Ownable, ReentrancyGuard {
         address _marketingWallet,
         address _p2eWallet,
         address _liquidityRewardsWallet,
-        address _uniswapRouterAddress
+        address _uniswapRouter
     ) ERC20("Rivals Token", "RVLS") {
-        require(_donationWallet != address(0), "Invalid donation wallet");
-        require(_liquidityPool != address(0), "Invalid liquidity pool");
-        require(_teamWallet != address(0), "Invalid team wallet");
-        require(_marketingWallet != address(0), "Invalid marketing wallet");
-        require(_p2eWallet != address(0), "Invalid P2E wallet");
-        require(_liquidityRewardsWallet != address(0), "Invalid liquidity rewards wallet");
-        require(_uniswapRouterAddress != address(0), "Invalid Uniswap router address");
-
         donationWallet = _donationWallet;
         liquidityPool = _liquidityPool;
         teamWallet = _teamWallet;
         marketingWallet = _marketingWallet;
         p2eWallet = _p2eWallet;
         liquidityRewardsWallet = _liquidityRewardsWallet;
-
-        // Mint the total supply to the donation wallet
-        _mint(donationWallet, MAX_SUPPLY); // Minting the entire supply to the donation wallet
-
-        // Set the unlock time for team tokens (2 years from deployment)
-        teamTokenUnlockTime = block.timestamp + 2 * 365 days; // 2 years
-
-        // Initialize Uniswap Router
-        uniswapRouter = IUniswapV2Router02(_uniswapRouterAddress);
-        // Create a Uniswap pair for this token
-        uniswapPair = IUniswapV2Factory(uniswapRouter.factory()).createPair(address(this), uniswapRouter.WETH());
+        uniswapRouter = IUniswapV2Router02(_uniswapRouter);
+        totalSupply = MAX_SUPPLY;
+        balanceOf[msg.sender] = totalSupply; // Assign total supply to the contract deployer
     }
 
-    // Tax exclusion functions
-    function excludeFromTax(address account ) external onlyOwner {
+    function setTeamTokenUnlockDuration(uint256 duration) external onlyOwner {
+        teamTokenUnlockDuration = duration;
+        emit TeamTokenUnlockDurationSet(duration);
+    }
+
+    function swapTokensForETH(uint256 tokenAmount, address[] calldata path) external nonReentrant {
+        require(tokenAmount > 0, "Amount must be greater than zero");
+        require(balanceOf[msg.sender] >= tokenAmount, "Insufficient token balance");
+        require(path.length >= 2, "Invalid swap path");
+        require(path[path.length - 1] == uniswapRouter.WETH(), "Invalid swap path: last address must be WETH");
+
+        // Approve the Uniswap router to spend the tokens
+        _approve(address(this), tokenAmount);
+
+        // Execute the swap
+        uint256[] memory amounts = uniswapRouter.swapExactTokensForETH(
+            tokenAmount,
+            0, // Accept any amount of ETH
+            path,
+            msg.sender,
+            block.timestamp
+        );
+
+        // Emit the TokensSwapped event
+        emit TokensSwapped(msg.sender, tokenAmount, amounts[amounts.length - 1]);
+    }
+
+    function excludeFromTax(address account) external onlyOwner {
         isExcludedFromTax[account] = true;
         emit TaxExcluded(account);
     }
@@ -92,7 +200,6 @@ contract RivalsToken is ERC20, Ownable, ReentrancyGuard {
         emit TaxIncluded(account);
     }
 
-    // Whitelist functions
     function whitelistAddress(address account) external onlyOwner {
         isWhitelisted[account] = true;
         emit AddressWhitelisted(account);
@@ -103,7 +210,6 @@ contract RivalsToken is ERC20, Ownable, ReentrancyGuard {
         emit AddressRemovedFromWhitelist(account);
     }
 
-    // Blacklist functions
     function blacklistAddress(address account) external onlyOwner {
         isBlacklisted[account] = true;
         emit AddressBlacklisted(account);
@@ -114,49 +220,66 @@ contract RivalsToken is ERC20, Ownable, ReentrancyGuard {
         emit AddressRemovedFromBlacklist(account);
     }
 
-    // Override transfer function to include tax logic
-    function _transfer(address sender, address recipient, uint256 amount) internal override {
-        require(!isBlacklisted[sender] && !isBlacklisted[recipient], "Blacklisted address");
+    function transfer(address to, uint256 value) public override returns (bool) {
+        uint256 taxAmount = calculateTax(msg.sender, value);
+        uint256 amountAfterTax = value - taxAmount;
 
-        uint256 taxAmount = 0;
-
-        if (!isExcludedFromTax[sender] && !isExcludedFromTax[recipient]) {
-            if (isWhitelisted[recipient]) {
-                taxAmount = (amount * BUY_TAX) / 100;
-            } else {
-                taxAmount = (amount * SELL_TAX) / 100;
-            }
-        }
-
-        uint256 amountAfterTax = amount - taxAmount;
-
-        super._transfer(sender, recipient, amountAfterTax);
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += amountAfterTax;
 
         if (taxAmount > 0) {
-            super._transfer(sender, address(this), taxAmount);
+            balanceOf[donationWallet] += taxAmount; // Send tax to donation wallet
+            emit TransferWithTax(msg.sender, to, value, taxAmount);
         }
+
+        emit Transfer(msg.sender, to, amountAfterTax);
+        return true;
     }
 
-    // Function to swap tokens for ETH
-    function swapTokensForETH(uint256 tokenAmount) external nonReentrant {
-        require(tokenAmount > 0, "Amount must be greater than zero");
-        require(balanceOf(msg.sender) >= tokenAmount, "Insufficient token balance");
+    function transferFrom(address from, address to, uint256 value) public override returns (bool) {
+        uint256 taxAmount = calculateTax(from, value);
+        uint256 amountAfterTax = value - taxAmount;
 
-        // Approve the Uniswap router to spend the tokens
-        _approve(address(this), tokenAmount);
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Allowance exceeded");
 
-        // Prepare the swap path
-        address[] memory path = new address[](2);
-        path[0] = address(this);
-        path[1] = uniswapRouter.WETH();
+        balanceOf[from] -= value;
+        balanceOf[to] += amountAfterTax;
 
-        // Execute the swap
-        uniswapRouter.swapExactTokensForETH(
-            tokenAmount,
-            0, // Accept any amount of ETH
-            path,
-            msg.sender,
-            block.timestamp
-        );
+        if (taxAmount > 0) {
+            balanceOf[donationWallet] += taxAmount; // Send tax to donation wallet
+            emit TransferWithTax(from, to, value, taxAmount);
+        }
+
+        allowance[from][msg.sender] -= value;
+        emit Transfer(from, to, amountAfterTax);
+        return true;
     }
+
+    function calculateTax(address sender, uint256 amount) internal view returns (uint256 ) {
+        if (isExcludedFromTax[sender]) {
+            return 0;
+        }
+        uint256 taxRate = (isWhitelisted[sender]) ? 0 : (sender == uniswapPair) ? SELL_TAX : BUY_TAX;
+        return (amount * taxRate) / 100;
+    }
+
+    function mint(address account, uint256 amount) external onlyOwner {
+        _mint(account, amount);
+    }
+
+    function burn(uint256 amount) external {
+        _burn(msg.sender, amount);
+    }
+
+    function unlockTeamTokens() external {
+        require(block.timestamp >= teamTokenUnlockTime + teamTokenUnlockDuration, "Tokens are still locked");
+        // Logic to release team tokens can be added here
+    }
+
+    function setTeamTokenUnlockTime(uint256 unlockTime) external onlyOwner {
+        teamTokenUnlockTime = unlockTime;
+    }
+
+    // Additional functions for handling token transfers, taxes, and other functionalities can be added here
 }
