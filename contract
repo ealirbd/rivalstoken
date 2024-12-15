@@ -17,28 +17,31 @@ contract ERC20 {
 
     constructor(string memory _name, string memory _symbol) {
         name = _name;
-        symbol = _Symbol;
+        symbol = _symbol;
         decimals = 18;
     }
 
-    function transfer(address to, uint256 value) public returns (bool) {
+    function transfer(address to, uint256 value) public virtual returns (bool) {
         require(balanceOf[msg.sender] >= value, "Insufficient balance");
         balanceOf[msg.sender] -= value;
         balanceOf[to] += value;
+        emit Transfer(msg.sender, to, value);
         return true;
     }
 
     function approve(address spender, uint256 value) public returns (bool) {
         allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
         return true;
     }
 
-    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+    function transferFrom(address from, address to, uint256 value) public virtual returns (bool) {
         require(balanceOf[from] >= value, "Insufficient balance");
         require(allowance[from][msg.sender] >= value, "Allowance exceeded");
         balanceOf[from] -= value;
         balanceOf[to] += value;
         allowance[from][msg.sender] -= value;
+        emit Transfer(from, to, value);
         return true;
     }
 
@@ -46,6 +49,7 @@ contract ERC20 {
         require(account != address(0), "Mint to the zero address");
         totalSupply += amount;
         balanceOf[account] += amount;
+        emit Transfer(address(0), account, amount);
     }
 
     function _burn(address account, uint256 amount) internal {
@@ -53,7 +57,11 @@ contract ERC20 {
         require(balanceOf[account] >= amount, "Burn amount exceeds balance");
         totalSupply -= amount;
         balanceOf[account] -= amount;
+        emit Transfer(account, address(0), amount);
     }
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
 }
 
 contract Ownable {
@@ -124,162 +132,70 @@ contract RivalsToken is ERC20, Ownable, ReentrancyGuard {
 
     // Locking mechanism for team tokens
     uint256 public teamTokenUnlockDuration; // Duration in seconds
-    uint256 public teamTokenUnlockTime; // Timestamp when tokens unlock
+    uint256 public teamTokenUnlockTime; // Timestamp when tokens unlock // Events for tracking token transfers and allocations
+    event TokensAllocated(address indexed to, uint256 amount);
+    event TokensUnlocked(address indexed to, uint256 amount);
 
-    mapping(address => bool) public isExcludedFromTax;
-    mapping(address => bool) public isWhitelisted;
-    mapping(address => bool) public isBlacklisted;
-
-    IUniswapV2Router02 public uniswapRouter;
-    address public uniswapPair;
-
-    event TaxExcluded(address indexed account );
-    event TaxIncluded(address indexed account);
-    event AddressWhitelisted(address indexed account);
-    event AddressRemovedFromWhitelist(address indexed account);
-    event AddressBlacklisted(address indexed account);
-    event AddressRemovedFromBlacklist(address indexed account);
-    event TeamTokenUnlockDurationSet(uint256 duration);
-    event TokensSwapped(address indexed user, uint256 tokenAmount, uint256 ethAmount);
-    event TransferWithTax(address indexed from, address indexed to, uint256 value, uint256 taxAmount);
-
-    constructor(
-        address _donationWallet,
-        address _liquidityPool,
-        address _teamWallet,
-        address _marketingWallet,
-        address _p2eWallet,
-        address _liquidityRewardsWallet,
-        address _uniswapRouter
-    ) ERC20("Rivals Token", "RVLS") {
-        donationWallet = _donationWallet;
-        liquidityPool = _liquidityPool;
-        teamWallet = _teamWallet;
-        marketingWallet = _marketingWallet;
-        p2eWallet = _p2eWallet;
-        liquidityRewardsWallet = _liquidityRewardsWallet;
-        uniswapRouter = IUniswapV2Router02(_uniswapRouter);
+    constructor() ERC20("Rivals Token", "RVLS") {
         totalSupply = MAX_SUPPLY;
-        balanceOf[msg.sender] = totalSupply; // Assign total supply to the contract deployer
+        balanceOf[msg.sender] = totalSupply; // Assign all tokens to the deployer
+        donationWallet = msg.sender; // Set the donation wallet to the deployer initially
+        teamWallet = msg.sender; // Set the team wallet to the deployer initially
+        marketingWallet = msg.sender; // Set the marketing wallet to the deployer initially
+        p2eWallet = msg.sender; // Set the P2E wallet to the deployer initially
+        liquidityRewardsWallet = msg.sender; // Set the liquidity rewards wallet to the deployer initially
+    }
+
+    function setDonationWallet(address _donationWallet) external onlyOwner {
+        donationWallet = _donationWallet;
+    }
+
+    function setLiquidityPool(address _liquidityPool) external onlyOwner {
+        liquidityPool = _liquidityPool;
+    }
+
+    function allocateTokens(address to, uint256 amount) external onlyOwner {
+        require(totalSupply + amount <= MAX_SUPPLY, "Exceeds max supply");
+        balanceOf[to] += amount;
+        totalSupply += amount;
+        emit TokensAllocated(to, amount);
+    }
+
+    function unlockTeamTokens() external onlyOwner {
+        require(block.timestamp >= teamTokenUnlockTime + teamTokenUnlockDuration, "Tokens are still locked");
+        uint256 amount = balanceOf[teamWallet];
+        balanceOf[teamWallet] = 0; // Reset balance to prevent re-entrancy
+        emit TokensUnlocked(teamWallet, amount);
     }
 
     function setTeamTokenUnlockDuration(uint256 duration) external onlyOwner {
         teamTokenUnlockDuration = duration;
-        emit TeamTokenUnlockDurationSet(duration);
-    }
-
-    function swapTokensForETH(uint256 tokenAmount, address[] calldata path) external nonReentrant {
-        require(tokenAmount > 0, "Amount must be greater than zero");
-        require(balanceOf[msg.sender] >= tokenAmount, "Insufficient token balance");
-        require(path.length >= 2, "Invalid swap path");
-        require(path[path.length - 1] == uniswapRouter.WETH(), "Invalid swap path: last address must be WETH");
-
-        // Approve the Uniswap router to spend the tokens
-        _approve(address(this), tokenAmount);
-
-        // Execute the swap
-        uint256[] memory amounts = uniswapRouter.swapExactTokensForETH(
-            tokenAmount,
-            0, // Accept any amount of ETH
-            path,
-            msg.sender,
-            block.timestamp
-        );
-
-        // Emit the TokensSwapped event
-        emit TokensSwapped(msg.sender, tokenAmount, amounts[amounts.length - 1]);
-    }
-
-    function excludeFromTax(address account) external onlyOwner {
-        isExcludedFromTax[account] = true;
-        emit TaxExcluded(account);
-    }
-
-    function includeInTax(address account) external onlyOwner {
-        isExcludedFromTax[account] = false;
-        emit TaxIncluded(account);
-    }
-
-    function whitelistAddress(address account) external onlyOwner {
-        isWhitelisted[account] = true;
-        emit AddressWhitelisted(account);
-    }
-
-    function removeFromWhitelist(address account) external onlyOwner {
-        isWhitelisted[account] = false;
-        emit AddressRemovedFromWhitelist(account);
-    }
-
-    function blacklistAddress(address account) external onlyOwner {
-        isBlacklisted[account] = true;
-        emit AddressBlacklisted(account);
-    }
-
-    function removeFromBlacklist(address account) external onlyOwner {
-        isBlacklisted[account] = false;
-        emit AddressRemovedFromBlacklist(account);
-    }
-
-    function transfer(address to, uint256 value) public override returns (bool) {
-        uint256 taxAmount = calculateTax(msg.sender, value);
-        uint256 amountAfterTax = value - taxAmount;
-
-        balanceOf[msg.sender] -= value;
-        balanceOf[to] += amountAfterTax;
-
-        if (taxAmount > 0) {
-            balanceOf[donationWallet] += taxAmount; // Send tax to donation wallet
-            emit TransferWithTax(msg.sender, to, value, taxAmount);
-        }
-
-        emit Transfer(msg.sender, to, amountAfterTax);
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 value) public override returns (bool) {
-        uint256 taxAmount = calculateTax(from, value);
-        uint256 amountAfterTax = value - taxAmount;
-
-        require(balanceOf[from] >= value, "Insufficient balance");
-        require(allowance[from][msg.sender] >= value, "Allowance exceeded");
-
-        balanceOf[from] -= value;
-        balanceOf[to] += amountAfterTax;
-
-        if (taxAmount > 0) {
-            balanceOf[donationWallet] += taxAmount; // Send tax to donation wallet
-            emit TransferWithTax(from, to, value, taxAmount);
-        }
-
-        allowance[from][msg.sender] -= value;
-        emit Transfer(from, to, amountAfterTax);
-        return true;
-    }
-
-    function calculateTax(address sender, uint256 amount) internal view returns (uint256 ) {
-        if (isExcludedFromTax[sender]) {
-            return 0;
-        }
-        uint256 taxRate = (isWhitelisted[sender]) ? 0 : (sender == uniswapPair) ? SELL_TAX : BUY_TAX;
-        return (amount * taxRate) / 100;
-    }
-
-    function mint(address account, uint256 amount) external onlyOwner {
-        _mint(account, amount);
-    }
-
-    function burn(uint256 amount) external {
-        _burn(msg.sender, amount);
-    }
-
-    function unlockTeamTokens() external {
-        require(block.timestamp >= teamTokenUnlockTime + teamTokenUnlockDuration, "Tokens are still locked");
-        // Logic to release team tokens can be added here
     }
 
     function setTeamTokenUnlockTime(uint256 unlockTime) external onlyOwner {
         teamTokenUnlockTime = unlockTime;
     }
 
-    // Additional functions for handling token transfers, taxes, and other functionalities can be added here
+    function transfer(address to, uint256 value) public override returns (bool) {
+        uint256 tax = (value * SELL_TAX) / 100;
+        uint256 amountAfterTax = value - tax;
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += amountAfterTax;
+        balanceOf[donationWallet] += tax; // Transfer tax to donation wallet
+        emit Transfer(msg.sender, to, amountAfterTax);
+        emit Transfer(msg.sender, donationWallet, tax);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public override returns (bool) {
+        uint256 tax = (value * SELL_TAX) / 100;
+        uint256 amountAfterTax = value - tax;
+        allowance[from][msg.sender] -= value;
+        balanceOf[from] -= value;
+        balanceOf[to] += amountAfterTax;
+        balanceOf[donationWallet] += tax; // Transfer tax to donation wallet
+        emit Transfer(from, to, amountAfterTax);
+        emit Transfer(from, donationWallet, tax);
+        return true;
+    }
 }
