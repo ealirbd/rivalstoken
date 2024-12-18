@@ -97,6 +97,7 @@ contract ReentrancyGuard {
     }
 }
 
+// Uniswap V2 Router interface
 interface IUniswapV2Router02 {
     function factory() external pure returns (address);
     function WETH() external pure returns (address);
@@ -109,9 +110,19 @@ interface IUniswapV2Router02 {
     ) external returns (uint256[] memory amounts);
 }
 
-
+// Uniswap V2 Factory interface
 interface IUniswapV2Factory {
     function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+// Uniswap V2 Pair interface
+interface IUniswapV2Pair {
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function mint(address to) external returns (uint256 liquidity);
+    function burn(address to) external returns (uint256 amount0, uint256 amount1);
+    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
 }
 
 contract RivalsToken is ERC20, Ownable2Step, ReentrancyGuard {
@@ -138,14 +149,13 @@ contract RivalsToken is ERC20, Ownable2Step, ReentrancyGuard {
 
     constructor(
         string memory _name,
-        string memory _symbol,
         address _donationWallet,
         address _teamWallet,
         address _marketingWallet,
         address _p2eWallet,
         address _liquidityRewardsWallet,
         address _taxWallet
-    ) payable ERC20(_name, _symbol) {
+    ) payable ERC20(_name, "RVLS") { // Set symbol to "RVLS"
         totalSupply = MAX_SUPPLY;
         balanceOf[msg.sender] = totalSupply; // Assign total supply to the contract deployer
         wallets = Wallets({
